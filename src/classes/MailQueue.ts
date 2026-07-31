@@ -28,7 +28,7 @@ export class MailQueue
      * Create a mail queue
      * @param rootPath Path where the queue, temp and failed folders are located/created
      */
-    constructor(rootPath: string = 'mailroot')
+    constructor(rootPath: string = Config.queueRootPath)
     {
         this.#paused = Config.mode === 'receive';
         this.#rootPath = rootPath;
@@ -42,6 +42,13 @@ export class MailQueue
     get tempPath(): string
     {
         return this.#tempPath;
+    }
+
+    /** Return true when the configured persistent storage threshold is reached. */
+    isAtOrAboveRejectThreshold(): boolean
+    {
+        if(!Config.queueMaxBytes) return false;
+        return this.#storageUsageBytes(this.#rootPath) >= (Config.queueMaxBytes * Config.queueRejectThresholdPercent / 100);
     }
 
     async close(): Promise<void>
@@ -225,7 +232,8 @@ export class MailQueue
             fs.mkdirSync(this.#queuePath);
 
         if(!this.#pathExists(this.#failedPath)?.isDirectory())
-            fs.mkdirSync(this.#failedPath);
+            fs.mkdirSync(this.#failedPath, {mode: 0o700});
+        fs.chmodSync(this.#failedPath, 0o700);
     }
 
     #pathExists(path: string)
@@ -236,5 +244,19 @@ export class MailQueue
             if(!('code' in error) || error.code !== 'ENOENT')
                 throw error;
         }
+    }
+
+    #storageUsageBytes(rootPath: string): number
+    {
+        let total = 0;
+        for(const entry of fs.readdirSync(rootPath, {withFileTypes: true}))
+        {
+            const entryPath = path.join(rootPath, entry.name);
+            if(entry.isDirectory())
+                total += this.#storageUsageBytes(entryPath);
+            else if(entry.isFile())
+                total += fs.statSync(entryPath).size;
+        }
+        return total;
     }
 }
