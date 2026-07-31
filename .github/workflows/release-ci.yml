@@ -1,0 +1,67 @@
+name: Secure CI/CD
+
+on:
+  pull_request:
+    branches: [dev]
+  push:
+    branches: [dev]
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+env:
+  IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/smtp2graph-build
+
+jobs:
+  validate:
+    name: Validate source and workflows
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20.x'
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npm run test:receive -- --logging error
+      - name: Gitleaks
+        uses: gitleaks/gitleaks-action@v2
+      - name: Validate workflows
+        run: docker run --rm -v "$PWD:/repo" rhysd/actionlint:latest -color /repo/.github/workflows/*.yml
+
+  deploy-dev:
+    name: Validate, publish and deploy development
+    if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
+    needs: validate
+    uses: mzhk-repo/shared-workflows/.github/workflows/shared-ci-cd.yml@main
+    with:
+      environment_name: development
+      deploy: true
+      use_ansible: true
+      build_and_push_docker: true
+      docker_image_name: smtp2graph-build
+      orchestration_script_path: scripts/deploy-orchestrator-swarm.sh
+    secrets: inherit
+
+  release-production:
+    name: Publish release evidence and deploy production
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: validate
+    uses: mzhk-repo/shared-workflows/.github/workflows/shared-ci-cd.yml@main
+    with:
+      environment_name: production
+      deploy: true
+      use_ansible: true
+      build_and_push_docker: true
+      docker_image_name: smtp2graph-build
+      orchestration_script_path: scripts/deploy-orchestrator-swarm.sh
+      release_tag: ${{ github.ref_name }}
+      control_plane_sha: fe3e461911c68949d9586b52a9c3253fa9795a45
+      declared_deploy_ref: fe3e461911c68949d9586b52a9c3253fa9795a45
+    secrets: inherit
