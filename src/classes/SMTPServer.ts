@@ -153,7 +153,7 @@ export class SMTPServer
         // Windows can keep a handle open for a short time even after 'finish' fires.
         // the rename that occurs in MailQueue.add must wait until the underlying
         // file descriptor is closed, which is signalled by the 'close' event.
-        writeStream.on('close', () => {
+        writeStream.on('close', async () => {
             if(stream.sizeExceeded)
             {
                 const err = new Error('Message exceeds fixed maximum message size');
@@ -168,8 +168,15 @@ export class SMTPServer
             }
             else
             {
-                callback();
-                this.#queue.add(tmpFile);
+                try {
+                    await this.#queue.add(tmpFile);
+                    callback();
+                } catch(error) {
+                    log('error', 'Failed to durably enqueue message', {error});
+                    const err = new Error('Temporary failure while queuing message');
+                    (<any>err).responseCode = 451;
+                    callback(err);
+                }
             }
         });
 
