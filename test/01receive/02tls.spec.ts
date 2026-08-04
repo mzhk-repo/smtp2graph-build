@@ -2,14 +2,15 @@ import { expect } from 'chai';
 import '../_config';
 import { Server } from '../classes/Server';
 import { submitAndVerifyMail } from './Helpers';
+import { tlsCertPath, tlsKeyPath } from './tls-fixture';
 
 describe('Receive: TLS', async function(){
     const server = new Server({
         mode: 'receive',
         receive: {
             secure: true,
-            tlsKeyPath: 'test/localhost.key',
-            tlsCertPath: 'test/localhost.crt',
+            tlsKeyPath,
+            tlsCertPath,
         },
     });
 
