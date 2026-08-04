@@ -9,10 +9,9 @@ COPY docker/startup.sh /bin/
 COPY docker/test.sh /bin/
 
 # Set execute permissions
-RUN chmod +x /bin/startup.sh
-RUN chmod +x /bin/test.sh
+RUN chmod +x /bin/startup.sh /bin/test.sh
 
 WORKDIR /data
 VOLUME /data
 EXPOSE 587
-ENTRYPOINT startup.sh
+ENTRYPOINT ["/bin/startup.sh"]
