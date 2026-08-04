@@ -43,4 +43,4 @@ jobs:
           path: |
             dist/server.js
             dist/smtp2graph-*
-          if-no-files-found: error
+          if-no-files-found: error
