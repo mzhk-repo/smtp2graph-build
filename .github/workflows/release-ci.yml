@@ -2,9 +2,9 @@ name: Secure build and release evidence
 
 on:
   pull_request:
-    branches: [dev]
+    branches: [dev, main]
   push:
-    branches: [dev]
+    branches: [dev, main]
     tags: ['v*']
 
 permissions:
