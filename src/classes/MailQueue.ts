@@ -66,8 +66,22 @@ export class MailQueue
             this.#removeFromRetryQueue(filename);
         } catch(error) {
             log('error', `Failed to send message "${filename}"`, {error, filename});
-            if(!(error instanceof UnrecoverableError))
+            if(error instanceof UnrecoverableError)
+                this.#moveToFailed(filename, error);
+            else
                 this.#addToRetryQueue(filename);
+        }
+    }
+
+    /** Atomically remove a permanent failure from the live queue. */
+    #moveToFailed(filename: string, sendError: UnrecoverableError)
+    {
+        try {
+            fs.renameSync(path.join(this.#queuePath, filename), path.join(this.#failedPath, filename));
+            this.#removeFromRetryQueue(filename);
+            log('error', `Moved permanently failed message "${filename}" to failed`, {error: sendError, filename});
+        } catch(error) {
+            log('error', `Error moving permanently failed message "${filename}" to failed`, {error, filename});
         }
     }
 
@@ -132,29 +146,52 @@ export class MailQueue
         });
     }
 
-    add(filePath: string)
+    /**
+     * Atomically enqueue a closed EML file and make both the file and queue
+     * directory durable before the SMTP success boundary is crossed.
+     */
+    add(filePath: string): Promise<void>
     {
         const filename = path.basename(filePath);
         const dest = path.join(this.#queuePath, filename);
 
-        const attempt = (tries = 0) => {
-            try {
-                fs.renameSync(filePath, dest);
-                log('verbose', `Moved file "${filename}" to queue`);
-            } catch(error: any) {
-                // On Windows the file may still be locked for a brief moment after
-                // the stream closes.  Instead of failing permanently we retry a few
-                // times with a small backoff.
-                if(error.code === 'EPERM' && process.platform === 'win32' && tries < 5) {
-                    log('warn', `EPERM renaming "${filename}", retrying`, {tries});
-                    setTimeout(() => attempt(tries + 1), 100);
-                } else {
-                    log('error', `Error while moving "${filename}" to queue`, {error, filename});
-                }
-            }
-        };
+        return new Promise((resolve, reject)=>{
+            const attempt = (tries = 0) => {
+                try {
+                    fs.renameSync(filePath, dest);
 
-        attempt();
+                    const fileDescriptor = fs.openSync(dest, 'r');
+                    try {
+                        fs.fsyncSync(fileDescriptor);
+                    } finally {
+                        fs.closeSync(fileDescriptor);
+                    }
+
+                    const directoryDescriptor = fs.openSync(this.#queuePath, 'r');
+                    try {
+                        fs.fsyncSync(directoryDescriptor);
+                    } finally {
+                        fs.closeSync(directoryDescriptor);
+                    }
+
+                    log('verbose', `Moved file "${filename}" to durable queue`);
+                    resolve();
+                } catch(error: any) {
+                    // On Windows the file may still be locked for a brief moment after
+                    // the stream closes. Retry a bounded number of times before
+                    // returning a temporary SMTP failure to the sender.
+                    if(error.code === 'EPERM' && process.platform === 'win32' && tries < 5) {
+                        log('warn', `EPERM renaming "${filename}", retrying`, {tries});
+                        setTimeout(() => attempt(tries + 1), 100);
+                    } else {
+                        log('error', `Error while moving "${filename}" to durable queue`, {error, filename});
+                        reject(error);
+                    }
+                }
+            };
+
+            attempt();
+        });
     }
 
     remove(filePath: string)
