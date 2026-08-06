@@ -63,7 +63,7 @@
     "chokidar": "^3.5.3",
     "ip-cidr": "^4.0.0",
     "mailsplit": "^5.4.0",
-    "nodemailer": "^6.10.1",
+    "nodemailer": "^9.0.4",
     "rate-limiter-flexible": "^4.0.0",
     "smtp-server": "^3.18.3",
     "winston": "^3.11.0",
@@ -75,6 +75,7 @@
     "linkify-it": "^5.0.2",
     "axios": "^1.8.2",
     "jws": "^3.2.3",
-    "braces": "^3.0.3"
+    "braces": "^3.0.3",
+    "nodemailer": "^9.0.4"
   }
 }
