@@ -58,7 +58,7 @@
   "dependencies": {
     "@azure/msal-node": "^2.10.0",
     "async-mutex": "^0.4.0",
-    "axios": "^1.6.5",
+    "axios": "^1.8.2",
     "base64-stream": "^1.0.0",
     "chokidar": "^3.5.3",
     "ip-cidr": "^4.0.0",
@@ -72,6 +72,8 @@
   "overrides": {
     "serialize-javascript": "^6.0.2",
     "picomatch": "^2.3.2",
-    "linkify-it": "^5.0.2"
+    "linkify-it": "^5.0.2",
+    "axios": "^1.8.2",
+    "jws": "^3.2.3"
   }
 }

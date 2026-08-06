@@ -14,4 +14,5 @@ RUN chmod +x /bin/startup.sh /bin/test.sh
 WORKDIR /data
 VOLUME /data
 EXPOSE 587
-ENTRYPOINT ["/bin/startup.sh"]
+USER 65532:65532
+ENTRYPOINT ["/bin/startup.sh", "node", "/bin/smtp2graph.js"]
