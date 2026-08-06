@@ -44,6 +44,16 @@ export class MailQueue
         return this.#tempPath;
     }
 
+    async close(): Promise<void>
+    {
+        if(this.#retryQueueInterval)
+        {
+            clearInterval(this.#retryQueueInterval);
+            this.#retryQueueInterval = undefined;
+        }
+        await this.#watcher?.close();
+    }
+
     #startWatcher()
     {
         if(this.#paused) return; // Don't start the watcher when it's paused
