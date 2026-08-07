@@ -17,6 +17,7 @@ jobs:
     name: Validate pull request
     if: github.event_name == 'pull_request'
     uses: mzhk-repo/shared-workflows/.github/workflows/shared-ci-cd.yml@main # reviewed mutable exception; all Action/image uses are centralized in shared CI/CD
+    secrets: inherit
     with:
       environment_name: development
       deploy: false
@@ -28,6 +29,7 @@ jobs:
     name: Build and push development image
     if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
     uses: mzhk-repo/shared-workflows/.github/workflows/shared-ci-cd.yml@main # reviewed mutable exception; all Action/image uses are centralized in shared CI/CD
+    secrets: inherit
     with:
       environment_name: development
       deploy: false
@@ -41,6 +43,7 @@ jobs:
     name: Build, publish and retain release evidence
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     uses: mzhk-repo/shared-workflows/.github/workflows/shared-ci-cd.yml@main # reviewed mutable exception; all Action/image uses are centralized in shared CI/CD
+    secrets: inherit
     with:
       environment_name: production
       deploy: false
