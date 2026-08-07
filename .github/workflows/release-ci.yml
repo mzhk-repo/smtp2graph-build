@@ -16,7 +16,7 @@ jobs:
   validate-pr:
     name: Validate pull request
     if: github.event_name == 'pull_request'
-    uses: mzhk-repo/shared-workflows/.github/workflows/shared-ci-cd.yml@main # reviewed mutable exception; all Action/image uses are centralized in shared CI/CD
+    uses: mzhk-repo/shared-workflows/.github/workflows/shared-ci-cd.yml@main # reviewed mutable exception; all Action/image uses are centralized in shared CI/CD.
     secrets: inherit
     with:
       environment_name: development
