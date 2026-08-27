@@ -16,7 +16,7 @@ jobs:
   validate-pr:
     name: Validate pull request
     if: github.event_name == 'pull_request'
-    uses: mzhk-repo/shared-workflows/.github/workflows/shared-ci-cd.yml@main # reviewed mutable exception; all Action/image uses are centralized in shared CI/CD.
+    uses: mzhk-repo/shared-workflows/.github/workflows/shared-ci-cd.yml@main # reviewed mutable exception; all Action/image uses are centralized in shared CI/CD
     secrets: inherit
     with:
       environment_name: development
@@ -51,6 +51,3 @@ jobs:
       build_and_push_docker: true
       push_docker_image: true
       docker_image_name: smtp2graph-build
-      validation_script_path: scripts/ci-validate.sh
-      release_tag: ${{ github.ref_name }}
-      control_plane_sha: fe3e461911c68949d9586b52a9c3253fa9795a45

@@ -10,6 +10,7 @@ const Joiner = require('mailsplit').Joiner;
 import { Config } from './Config';
 import { prefixedLog } from './Logger';
 import { MailQueue } from './MailQueue';
+import { Metrics } from './Metrics';
 
 const log = prefixedLog('SMTPServer');
 
@@ -54,10 +55,11 @@ export class SMTPServer
             this.#server.on('error', reject);
 
             this.#server.listen(Config.smtpPort, Config.smtpListenIp, ()=>{
-                log('info', `Server started on ${Config.smtpListenIp || 'any-ip'}:${Config.smtpPort}`);
+                Metrics.setTlsCertificateNotAfterSeconds(Metrics.certificateNotAfterSeconds(Config.smtpTlsCertPath));
+                log('info', 'smtp_listener_started');
                 this.#server.off('error', reject);
                 this.#server.on('error', error=>{
-                    log('error', `An error occured`, {error});
+                    log('error', 'smtp_listener_error', {error});
                 });
                 resolve();
             });
@@ -83,6 +85,7 @@ export class SMTPServer
 
         this.#sessionIpById.set(session.id, session.remoteAddress);
         this.#sessionCountByIp.set(session.remoteAddress, activeSessions + 1);
+        Metrics.sessionOpened();
         callback();
     };
 
@@ -97,6 +100,7 @@ export class SMTPServer
                 this.#sessionCountByIp.delete(clientIp);
             else
                 this.#sessionCountByIp.set(clientIp, activeSessions - 1);
+            Metrics.sessionClosed();
         }
         callback?.();
     };
@@ -107,10 +111,17 @@ export class SMTPServer
             if(!auth.username || !auth.password)
                 callback(new Error('Unsupported authentication method'));
             else if(Config.isUserAllowed(auth.username, auth.password))
+            {
+                Metrics.smtpAuthAccepted();
                 callback(null, {user: auth.username});
+            }
             else
+            {
+                Metrics.smtpAuthRejected();
                 callback(new Error('Invalid login'));
+            }
         }).catch((rateLimit: RateLimiterRes)=>{
+            Metrics.smtpAuthRejected();
             callback(new Error(`Too many failed logins`));
         });
     };
@@ -119,11 +130,13 @@ export class SMTPServer
     {
         if(!Config.isFromAllowed(address.address, session.user))
         {
+            Metrics.smtpSubmissionRejected();
             callback(new Error(`FROM "${address.address}" not allowed`));
             return;
         }
         if(this.#queue.isAtOrAboveRejectThreshold())
         {
+            Metrics.smtpSubmissionRejected();
             const error = new Error('Queue capacity threshold reached. Try again later');
             (<any>error).responseCode = 451;
             callback(error);
@@ -134,6 +147,7 @@ export class SMTPServer
         this.#messageRateLimiter.consume(clientKey).then(()=>{
             callback();
         }).catch((rateLimit: RateLimiterRes)=>{
+            Metrics.smtpSubmissionRejected();
             const error = new Error(`Rate limit exceeded. Try again in ${Math.ceil(rateLimit.msBeforeNext/1000)} seconds`);
             (<any>error).responseCode = 451;
             callback(error);
@@ -164,7 +178,7 @@ export class SMTPServer
                     if(!data.headers.hasHeader('From') && envelope.mailFrom)
                         data.headers.add('From', envelope.mailFrom.address);
                 } catch(error) {
-                    log('error', `Failed to inject from header`, {error});
+                    log('error', 'smtp_from_header_injection_failed', {error, correlationId: session.id});
                 }
 
                 // Inject bcc header if needed
@@ -181,7 +195,7 @@ export class SMTPServer
                         if(bcc.length) data.headers.add('Bcc', bcc.map(r=>r.address).join(', '));
                     }
                 } catch(error) {
-                    log('error', `Failed to inject BCC header`, {error});
+                    log('error', 'smtp_bcc_header_injection_failed', {error, correlationId: session.id});
                 }
             }
         });
@@ -199,6 +213,7 @@ export class SMTPServer
         writeStream.on('close', async () => {
             if(stream.sizeExceeded)
             {
+                Metrics.smtpSubmissionRejected();
                 const err = new Error('Message exceeds fixed maximum message size');
                 (<any>err).responseCode = 552;
                 callback(err);
@@ -212,10 +227,12 @@ export class SMTPServer
             else
             {
                 try {
-                    await this.#queue.add(tmpFile);
+                    await this.#queue.add(tmpFile, session.id);
+                    Metrics.smtpSubmissionAccepted();
                     callback();
                 } catch(error) {
-                    log('error', 'Failed to durably enqueue message', {error});
+                    Metrics.smtpSubmissionRejected();
+                    log('error', 'smtp_durable_enqueue_failed', {error, correlationId: session.id});
                     const err = new Error('Temporary failure while queuing message');
                     (<any>err).responseCode = 451;
                     callback(err);
@@ -226,7 +243,7 @@ export class SMTPServer
         // ensure the stream is ended when the mail compiles (pipe will do this for us,
         // but explictly listening for 'finish' lets us log/debug if needed)
         writeStream.on('finish', ()=>{
-            log('verbose', 'EML write finished, waiting for close');
+            log('verbose', 'smtp_message_write_finished', {correlationId: session.id});
         });
     };
     

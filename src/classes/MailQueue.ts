@@ -1,11 +1,13 @@
 import fs from 'fs';
 import path from 'path';
+import { randomUUID } from 'crypto';
 import chokidar from 'chokidar';
 import { Mutex } from 'async-mutex';
 import { Mailer } from './Mailer';
 import { prefixedLog } from './Logger';
 import { Config } from './Config';
 import { UnrecoverableError } from './Constants';
+import { IQueueMetrics, Metrics } from './Metrics';
 
 const log = prefixedLog('MailQueue');
 
@@ -21,6 +23,7 @@ export class MailQueue
     /** Remember mails to retry. Key = filename */
     #retryQueue = new Map<string, {retryAfter: Date, retryCount: number}>();
     #retryQueueInterval: NodeJS.Timeout|undefined;
+    #correlationIdByFilename = new Map<string, string>();
     /** Prevent multiple retries from running simultaneous */
     #retryMutex = new Mutex();
 
@@ -36,6 +39,7 @@ export class MailQueue
         this.#queuePath = path.join(rootPath, 'queue');
         this.#failedPath = path.join(rootPath, 'failed');
         this.#ensureFolderStructure();
+        Metrics.setQueueMetricsProvider(this.getMetrics.bind(this));
         this.#startWatcher();
     }
 
@@ -49,6 +53,20 @@ export class MailQueue
     {
         if(!Config.queueMaxBytes) return false;
         return this.#storageUsageBytes(this.#rootPath) >= (Config.queueMaxBytes * Config.queueRejectThresholdPercent / 100);
+    }
+
+    getMetrics(): IQueueMetrics
+    {
+        const queued = this.#directoryMetrics(this.#queuePath);
+        const failed = this.#directoryMetrics(this.#failedPath);
+        return {
+            queuedMessages: queued.files,
+            queuedBytes: queued.bytes,
+            failedMessages: failed.files,
+            failedBytes: failed.bytes,
+            storageBytes: this.#storageUsageBytes(this.#rootPath),
+            storageRejectThresholdBytes: Config.queueMaxBytes?Math.floor(Config.queueMaxBytes*Config.queueRejectThresholdPercent/100):0,
+        };
     }
 
     async close(): Promise<void>
@@ -67,7 +85,7 @@ export class MailQueue
 
         this.#watcher = chokidar.watch(path.join(this.#queuePath, '*.eml'));
         this.#watcher.on('error', (error)=>{
-            log('error', `An error occured watching the queue folder`, {error});
+            log('error', 'queue_watcher_error', {error});
         });
         this.#watcher.on('add', this.#onFileAdded.bind(this));
     }
@@ -75,34 +93,42 @@ export class MailQueue
     async #onFileAdded(filePath: string)
     {
         const filename = path.basename(filePath);
-        log('verbose', `File "${filename}" appeared in the queue`);
+        const correlationId = this.#correlationIdByFilename.get(filename) ?? randomUUID();
+        log('verbose', 'queue_delivery_started', {correlationId});
         
         try {
+            const startedAt = Date.now();
             await Mailer.sendEml(filePath);
             this.remove(filePath);
             this.#removeFromRetryQueue(filename);
+            Metrics.deliverySucceeded((Date.now()-startedAt)/1000);
         } catch(error) {
-            log('error', `Failed to send message "${filename}"`, {error, filename});
+            Metrics.deliveryFailed();
+            log('error', 'queue_delivery_failed', {error, correlationId});
             if(error instanceof UnrecoverableError)
-                this.#moveToFailed(filename, error);
+                this.#moveToFailed(filename, error, correlationId);
             else
-                this.#addToRetryQueue(filename);
+            {
+                Metrics.deliveryRetried();
+                this.#addToRetryQueue(filename, correlationId);
+            }
         }
     }
 
     /** Atomically remove a permanent failure from the live queue. */
-    #moveToFailed(filename: string, sendError: UnrecoverableError)
+    #moveToFailed(filename: string, sendError: UnrecoverableError, correlationId: string)
     {
         try {
             fs.renameSync(path.join(this.#queuePath, filename), path.join(this.#failedPath, filename));
             this.#removeFromRetryQueue(filename);
-            log('error', `Moved permanently failed message "${filename}" to failed`, {error: sendError, filename});
+            this.#correlationIdByFilename.delete(filename);
+            log('error', 'queue_message_moved_to_failed', {error: sendError, correlationId});
         } catch(error) {
-            log('error', `Error moving permanently failed message "${filename}" to failed`, {error, filename});
+            log('error', 'queue_move_to_failed_error', {error, correlationId});
         }
     }
 
-    #addToRetryQueue(filename: string)
+    #addToRetryQueue(filename: string, correlationId: string)
     {
         if(Config.sendRetryLimit) // Retrying is enabled?
         {
@@ -113,7 +139,8 @@ export class MailQueue
                     this.#retryQueue.delete(filename); // Remove from queue
                     fs.renameSync(path.join(this.#queuePath, filename), path.join(this.#failedPath, filename)); // Move to failed dir
                 } catch(error) {
-                    log('error', `Error moving file "${filename}" from queue to failed dir`, {error, filename});
+                    this.#correlationIdByFilename.delete(filename);
+                    log('error', 'queue_retry_exhausted_move_failed', {error, correlationId});
                 }
             }
             else // This file should be retried
@@ -167,7 +194,7 @@ export class MailQueue
      * Atomically enqueue a closed EML file and make both the file and queue
      * directory durable before the SMTP success boundary is crossed.
      */
-    add(filePath: string): Promise<void>
+    add(filePath: string, correlationId: string): Promise<void>
     {
         const filename = path.basename(filePath);
         const dest = path.join(this.#queuePath, filename);
@@ -176,6 +203,7 @@ export class MailQueue
             const attempt = (tries = 0) => {
                 try {
                     fs.renameSync(filePath, dest);
+                    this.#correlationIdByFilename.set(filename, correlationId);
 
                     const fileDescriptor = fs.openSync(dest, 'r');
                     try {
@@ -191,17 +219,17 @@ export class MailQueue
                         fs.closeSync(directoryDescriptor);
                     }
 
-                    log('verbose', `Moved file "${filename}" to durable queue`);
+                    log('verbose', 'queue_message_durably_enqueued', {correlationId});
                     resolve();
                 } catch(error: any) {
                     // On Windows the file may still be locked for a brief moment after
                     // the stream closes. Retry a bounded number of times before
                     // returning a temporary SMTP failure to the sender.
                     if(error.code === 'EPERM' && process.platform === 'win32' && tries < 5) {
-                        log('warn', `EPERM renaming "${filename}", retrying`, {tries});
+                        log('warn', 'queue_enqueue_retry', {correlationId});
                         setTimeout(() => attempt(tries + 1), 100);
                     } else {
-                        log('error', `Error while moving "${filename}" to durable queue`, {error, filename});
+                        log('error', 'queue_enqueue_error', {error, correlationId});
                         reject(error);
                     }
                 }
@@ -216,7 +244,7 @@ export class MailQueue
         try {
             fs.unlinkSync(filePath);
         } catch(error) {
-            log('error', `Error while deleting "${filePath}" from queue`, {error});
+            log('error', 'queue_delete_error', {error});
         }
     }
 
@@ -258,5 +286,18 @@ export class MailQueue
                 total += fs.statSync(entryPath).size;
         }
         return total;
+    }
+
+    #directoryMetrics(directoryPath: string): {files: number, bytes: number}
+    {
+        let files = 0;
+        let bytes = 0;
+        for(const entry of fs.readdirSync(directoryPath, {withFileTypes: true}))
+        {
+            if(!entry.isFile() || !entry.name.endsWith('.eml')) continue;
+            files++;
+            bytes += fs.statSync(path.join(directoryPath, entry.name)).size;
+        }
+        return {files, bytes};
     }
 }
