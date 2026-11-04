@@ -191,7 +191,7 @@ export class SMTPServer
                         if(data.headers.hasHeader('Cc')) visibleRecipients.push(...addressparser(data.headers.get('Cc'), {flatten: true}));
 
                         // Check if there are recipients missing from TO/CC, in that case we add them as BCC
-                        const bcc = envelope.rcptTo.filter(rcpt=>!visibleRecipients.some(visible=>visible.address.toLowerCase()===rcpt.address.toLowerCase()));
+                        const bcc = envelope.rcptTo.filter(rcpt=>!visibleRecipients.some(visible=>visible.address?.toLowerCase()===rcpt.address.toLowerCase()));
                         if(bcc.length) data.headers.add('Bcc', bcc.map(r=>r.address).join(', '));
                     }
                 } catch(error) {
