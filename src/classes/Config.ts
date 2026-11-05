@@ -1,6 +1,7 @@
 import fs from 'fs';
 import { parse as parseYaml } from 'yaml';
-import IPCIDR from 'ip-cidr';
+import { isIP } from 'net';
+import { isIpInSubnet } from './IP';
 import { AxiosProxyConfig } from 'axios';
 
 // Set the working dir based on the --baseDir argument
@@ -123,7 +124,7 @@ export class Config
             throw new InvalidConfig('"requireAuth" enabled without users defined');
         else if(this.#config.receive?.maxSize && (typeof this.#config.receive.maxSize !== 'string' || !/^\d+k|m$/i.test(this.#config.receive.maxSize)))
             throw new InvalidConfig('"maxSize" property is invalid');
-        else if(this.smtpListenIp && !IPCIDR.isValidAddress(this.smtpListenIp))
+        else if(this.smtpListenIp && !isIP(this.smtpListenIp))
             throw new InvalidConfig('"listenAddress" property is invalid');
         else if(this.smtpTlsKeyPath && !fs.existsSync(this.smtpTlsKeyPath))
             throw new InvalidConfig(`Key file "${this.smtpTlsKeyPath}" could not be found`);
@@ -151,7 +152,7 @@ export class Config
             throw new InvalidConfig(`Property "storage.rejectThresholdPercent" should be between 0 and 100`);
         else if((this.#config.observability?.listenAddress === undefined) !== (this.#config.observability?.port === undefined))
             throw new InvalidConfig('Properties "observability.listenAddress" and "observability.port" must be set together');
-        else if(this.observabilityListenAddress && !IPCIDR.isValidAddress(this.observabilityListenAddress))
+        else if(this.observabilityListenAddress && !isIP(this.observabilityListenAddress))
             throw new InvalidConfig('Property "observability.listenAddress" is invalid');
         else if(this.observabilityPort !== undefined && (!Number.isInteger(this.observabilityPort) || this.observabilityPort < 1 || this.observabilityPort > 65535))
             throw new InvalidConfig('Property "observability.port" should be an integer between 1 and 65535');
@@ -404,13 +405,7 @@ export class Config
         {
             for(const whitelisted of this.#config.receive?.ipWhitelist)
             {
-                if(IPCIDR.isValidCIDR(whitelisted)) // It's a CIDR?
-                {
-                    const cidr = new IPCIDR(whitelisted);
-                    if(cidr.contains(clientIp))
-                        return true;
-                }
-                else if(whitelisted === clientIp)
+                if(whitelisted === clientIp || isIpInSubnet(clientIp, whitelisted))
                     return true;
             }
         }
