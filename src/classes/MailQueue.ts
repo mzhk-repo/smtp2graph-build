@@ -106,15 +106,14 @@ export class MailQueue
             this.#removeFromRetryQueue(filename);
             Metrics.deliverySucceeded((Date.now()-startedAt)/1000);
         } catch(error) {
-            Metrics.deliveryFailed();
             log('error', 'queue_delivery_failed', {error, correlationId});
             if(error instanceof UnrecoverableError)
-                this.#moveToFailed(filename, error, correlationId);
-            else
             {
-                Metrics.deliveryRetried();
-                this.#addToRetryQueue(filename, correlationId);
+                Metrics.deliveryFailed();
+                this.#moveToFailed(filename, error, correlationId);
             }
+            else
+                this.#addToRetryQueue(filename, correlationId);
         }
     }
 
@@ -138,6 +137,7 @@ export class MailQueue
             const data = this.#retryQueue.get(filename);
             if(data && data.retryCount >= Config.sendRetryLimit) // This file is already in the queue and exceeded the retry limit?
             {
+                Metrics.deliveryFailed();
                 try {
                     this.#retryQueue.delete(filename); // Remove from queue
                     fs.renameSync(path.join(this.#queuePath, filename), path.join(this.#failedPath, filename)); // Move to failed dir
@@ -151,11 +151,14 @@ export class MailQueue
                 const retryAfter = new Date();
                 retryAfter.setMinutes(retryAfter.getMinutes()+Config.sendRetryInterval);
                 this.#retryQueue.set(filename, {retryAfter, retryCount: (data?.retryCount || 0)+1});
+                Metrics.deliveryRetried();
             }
 
             // Start/stop the queue if necessary
             this.#startStopRetryQueue();
         }
+        else
+            Metrics.deliveryFailed();
     }
 
     #removeFromRetryQueue(filename: string)

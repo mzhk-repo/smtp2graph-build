@@ -77,7 +77,7 @@ export class Metrics
             '# TYPE smtp2graph_smtp_auth_total counter',
             `smtp2graph_smtp_auth_total{result="accepted"} ${this.#authAccepted}`,
             `smtp2graph_smtp_auth_total{result="rejected"} ${this.#authRejected}`,
-            '# HELP smtp2graph_delivery_attempts_total Graph delivery outcomes.',
+            '# HELP smtp2graph_delivery_attempts_total Graph delivery attempts: retry means another attempt was scheduled; failed means no retry was scheduled, not necessarily that the message was moved to failed storage.',
             '# TYPE smtp2graph_delivery_attempts_total counter',
             `smtp2graph_delivery_attempts_total{result="succeeded"} ${this.#deliverySucceeded}`,
             `smtp2graph_delivery_attempts_total{result="retry"} ${this.#deliveryRetried}`,
