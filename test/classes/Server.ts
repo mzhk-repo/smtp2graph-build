@@ -49,7 +49,7 @@ export class Server
             const timeoutHandle = setTimeout(onTimeout, timeout);
 
             const onData = (data: Buffer)=>{
-                if(data.toString().includes('Server started'))
+                if(data.toString().includes('smtp_listener_started'))
                 {
                     detachListeners();
                     this.#proc?.on('exit', ()=>{

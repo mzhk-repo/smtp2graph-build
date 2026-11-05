@@ -1,10 +1,18 @@
+FROM node:20-alpine AS build
+
+WORKDIR /src
+COPY package.json package-lock.json ./
+RUN npm ci
+COPY . .
+RUN npm run build
+
 FROM node:20-alpine
 
 ARG VERSION
 LABEL version="SMTP2Graph v${VERSION}"
 
 # Add SMTP2Graph binary
-COPY dist/server.js /bin/smtp2graph.js
+COPY --from=build /src/dist/server.js /bin/smtp2graph.js
 COPY docker/startup.sh /bin/
 COPY docker/test.sh /bin/
 

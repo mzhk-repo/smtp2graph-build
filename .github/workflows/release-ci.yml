@@ -53,6 +53,3 @@ jobs:
       build_and_push_docker: true
       push_docker_image: true
       docker_image_name: smtp2graph-build
-      validation_script_path: scripts/ci-validate.sh
-      release_tag: ${{ github.ref_name }}
-      control_plane_sha: fe3e461911c68949d9586b52a9c3253fa9795a45

@@ -38,7 +38,7 @@ async function startServer(baseDir: string): Promise<IRunningServer>
             reject(new Error('gateway listener did not become ready'));
         }, 5000);
         const onOutput = ()=>{
-            if(output.includes('Server started'))
+            if(output.includes('smtp_listener_started'))
             {
                 cleanup();
                 resolve();

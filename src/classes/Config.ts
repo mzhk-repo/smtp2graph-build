@@ -1,6 +1,7 @@
 import fs from 'fs';
 import { parse as parseYaml } from 'yaml';
-import IPCIDR from 'ip-cidr';
+import { isIP } from 'net';
+import { isIpInSubnet } from './IP';
 import { AxiosProxyConfig } from 'axios';
 
 // Set the working dir based on the --baseDir argument
@@ -74,6 +75,12 @@ export interface IConfig
         /** Reject new MAIL FROM submissions when usage reaches this percentage */
         rejectThresholdPercent?: number;
     },
+    observability?: {
+        /** Address for the unauthenticated health and metrics listener. */
+        listenAddress?: string;
+        /** Port for the unauthenticated health and metrics listener. */
+        port?: number;
+    },
     httpProxy?: {
         host: string,
         port: number,
@@ -117,7 +124,7 @@ export class Config
             throw new InvalidConfig('"requireAuth" enabled without users defined');
         else if(this.#config.receive?.maxSize && (typeof this.#config.receive.maxSize !== 'string' || !/^\d+k|m$/i.test(this.#config.receive.maxSize)))
             throw new InvalidConfig('"maxSize" property is invalid');
-        else if(this.smtpListenIp && !IPCIDR.isValidAddress(this.smtpListenIp))
+        else if(this.smtpListenIp && !isIP(this.smtpListenIp))
             throw new InvalidConfig('"listenAddress" property is invalid');
         else if(this.smtpTlsKeyPath && !fs.existsSync(this.smtpTlsKeyPath))
             throw new InvalidConfig(`Key file "${this.smtpTlsKeyPath}" could not be found`);
@@ -143,6 +150,12 @@ export class Config
             throw new InvalidConfig(`Property "storage.maxBytes" should be a positive safe integer`);
         else if(this.#config.storage?.rejectThresholdPercent !== undefined && (typeof this.queueRejectThresholdPercent !== 'number' || this.queueRejectThresholdPercent <= 0 || this.queueRejectThresholdPercent > 100))
             throw new InvalidConfig(`Property "storage.rejectThresholdPercent" should be between 0 and 100`);
+        else if((this.#config.observability?.listenAddress === undefined) !== (this.#config.observability?.port === undefined))
+            throw new InvalidConfig('Properties "observability.listenAddress" and "observability.port" must be set together');
+        else if(this.observabilityListenAddress && !isIP(this.observabilityListenAddress))
+            throw new InvalidConfig('Property "observability.listenAddress" is invalid');
+        else if(this.observabilityPort !== undefined && (!Number.isInteger(this.observabilityPort) || this.observabilityPort < 1 || this.observabilityPort > 65535))
+            throw new InvalidConfig('Property "observability.port" should be an integer between 1 and 65535');
         else if(this.#config.httpProxy && typeof this.#config.httpProxy.host !== 'string')
             throw new InvalidConfig(`Property "httpProxy.host" should be a string`);
         else if(this.#config.httpProxy && typeof this.#config.httpProxy.port !== 'number')
@@ -322,6 +335,16 @@ export class Config
         return this.#config.storage?.rejectThresholdPercent ?? 80;
     }
 
+    static get observabilityListenAddress()
+    {
+        return this.#config.observability?.listenAddress;
+    }
+
+    static get observabilityPort()
+    {
+        return this.#config.observability?.port;
+    }
+
     static get smtpAuthLimitDuration()
     {
         return this.#config.receive?.authLimit?.duration ?? 60;
@@ -382,13 +405,7 @@ export class Config
         {
             for(const whitelisted of this.#config.receive?.ipWhitelist)
             {
-                if(IPCIDR.isValidCIDR(whitelisted)) // It's a CIDR?
-                {
-                    const cidr = new IPCIDR(whitelisted);
-                    if(cidr.contains(clientIp))
-                        return true;
-                }
-                else if(whitelisted === clientIp)
+                if(whitelisted === clientIp || isIpInSubnet(clientIp, whitelisted))
                     return true;
             }
         }
