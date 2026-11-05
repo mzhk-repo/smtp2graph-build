@@ -8,10 +8,12 @@ const require = createRequire(import.meta.url);
 
 describe('MailQueue: permanent failure and durable enqueue', ()=>{
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'smtp2graph-queue-'));
-    const configPath = path.join(process.cwd(), 'config.yml');
+    const configPath = path.join(root, 'config.yml');
+    const configArg = `--config=${configPath}`;
     let MailQueue: typeof import('../../src/classes/MailQueue').MailQueue;
     let Mailer: typeof import('../../src/classes/Mailer').Mailer;
     let MailboxAccessDenied: typeof import('../../src/classes/Mailer').MailboxAccessDenied;
+    let Config: typeof import('../../src/classes/Config').Config;
 
     before(async ()=>{
         fs.writeFileSync(configPath, [
@@ -22,13 +24,15 @@ describe('MailQueue: permanent failure and durable enqueue', ()=>{
             '    tenant: test-tenant',
             '    secret: test-secret',
         ].join('\n'));
+        process.argv.push(configArg);
         (globalThis as any).DEBUG = false;
         ({MailQueue} = require('../../src/classes/MailQueue'));
         ({Mailer, MailboxAccessDenied} = require('../../src/classes/Mailer'));
+        ({Config} = require('../../src/classes/Config'));
     });
 
     after(()=>{
-        if(fs.existsSync(configPath)) fs.unlinkSync(configPath);
+        process.argv.splice(process.argv.indexOf(configArg), 1);
         fs.rmSync(root, {recursive: true, force: true});
     });
 
@@ -44,7 +48,7 @@ describe('MailQueue: permanent failure and durable enqueue', ()=>{
             return originalFsync(fd);
         }) as typeof fs.fsyncSync;
         try {
-            await queue.add(source);
+            await queue.add(source, 'durable-test');
         } finally {
             fs.fsyncSync = originalFsync;
             await queue.close();
@@ -53,6 +57,121 @@ describe('MailQueue: permanent failure and durable enqueue', ()=>{
         expect(fsyncCalls).to.equal(2);
         expect(fs.existsSync(path.join(root, 'durable', 'queue', 'message.eml'))).to.equal(true);
     });
+
+    async function waitFor(condition: ()=>boolean)
+    {
+        for(let i = 0; i < 100 && !condition(); i++) await new Promise(resolve=>setTimeout(resolve, 20));
+        expect(condition()).to.equal(true);
+    }
+
+    it('releases the correlation ID after delivery and after an external removal', async ()=>{
+        const queue = new MailQueue(path.join(root, 'correlation-success'));
+        const originalSet = Map.prototype.set;
+        const originalSend = Mailer.sendEml;
+        const originalUnlink = fs.unlinkSync;
+        let correlations: Map<string, string>|undefined;
+        Map.prototype.set = function(key: any, value: any) {
+            if(value === 'correlation-success') correlations = this as Map<string, string>;
+            return originalSet.call(this, key, value);
+        };
+        Mailer.sendEml = async ()=>{};
+        try {
+            const source = path.join(queue.tempPath, 'success.eml');
+            fs.writeFileSync(source, 'message');
+            await queue.add(source, 'correlation-success');
+            await waitFor(()=>!!correlations && !correlations.has('success.eml'));
+
+            const failedSource = path.join(queue.tempPath, 'unlink-failure.eml');
+            const queued = path.join(root, 'correlation-success', 'queue', 'unlink-failure.eml');
+            fs.unlinkSync = ((file: fs.PathLike) => {
+                if(String(file) === queued) throw new Error('synthetic unlink failure');
+                return originalUnlink(file);
+            }) as typeof fs.unlinkSync;
+            fs.writeFileSync(failedSource, 'message');
+            await queue.add(failedSource, 'correlation-success');
+            await new Promise(resolve=>setTimeout(resolve, 250));
+            expect(correlations?.has('unlink-failure.eml')).to.equal(true);
+            originalUnlink(queued);
+            await waitFor(()=>!correlations!.has('unlink-failure.eml'));
+        } finally {
+            Map.prototype.set = originalSet;
+            Mailer.sendEml = originalSend;
+            fs.unlinkSync = originalUnlink;
+            await queue.close();
+        }
+    });
+
+    it('does not retain correlation IDs in receive-only mode', async ()=>{
+        const mode = Object.getOwnPropertyDescriptor(Config, 'mode')!;
+        const originalSet = Map.prototype.set;
+        let retained = false;
+        Object.defineProperty(Config, 'mode', {configurable: true, get: ()=>'receive'});
+        Map.prototype.set = function(key: any, value: any) {
+            if(value === 'receive-only-correlation') retained = true;
+            return originalSet.call(this, key, value);
+        };
+        const queue = new MailQueue(path.join(root, 'receive-only'));
+        try {
+            const source = path.join(queue.tempPath, 'receive.eml');
+            fs.writeFileSync(source, 'message');
+            await queue.add(source, 'receive-only-correlation');
+            expect(retained).to.equal(false);
+        } finally {
+            Map.prototype.set = originalSet;
+            Object.defineProperty(Config, 'mode', mode);
+            await queue.close();
+        }
+    });
+
+    for(const moveFails of [false, true])
+    {
+        it(`handles correlation ID when retry-exhausted move ${moveFails ? 'fails' : 'succeeds'}`, async ()=>{
+            const limit = Object.getOwnPropertyDescriptor(Config, 'sendRetryLimit')!;
+            const interval = Object.getOwnPropertyDescriptor(Config, 'sendRetryInterval')!;
+            const originalSet = Map.prototype.set;
+            const originalInterval = global.setInterval;
+            const originalSend = Mailer.sendEml;
+            const originalRename = fs.renameSync;
+            const queueRoot = path.join(root, `retry-${moveFails}`);
+            let correlations: Map<string, string>|undefined;
+            let retry: (()=>void)|undefined;
+            let attempts = 0;
+            Object.defineProperty(Config, 'sendRetryLimit', {configurable: true, get: ()=>1});
+            Object.defineProperty(Config, 'sendRetryInterval', {configurable: true, get: ()=>-1});
+            Map.prototype.set = function(key: any, value: any) {
+                if(value === 'retry-correlation') correlations = this as Map<string, string>;
+                return originalSet.call(this, key, value);
+            };
+            global.setInterval = ((callback: any, delay: number, ...args: any[])=>{
+                if(delay === 30000) retry = callback;
+                return originalInterval(callback, delay, ...args);
+            }) as typeof setInterval;
+            Mailer.sendEml = async ()=>{ attempts++; throw new Error('synthetic delivery failure'); };
+            fs.renameSync = ((oldPath: fs.PathLike, newPath: fs.PathLike)=>{
+                if(moveFails && String(newPath) === path.join(queueRoot, 'failed', 'retry.eml')) throw new Error('synthetic move failure');
+                return originalRename(oldPath, newPath);
+            }) as typeof fs.renameSync;
+            const queue = new MailQueue(queueRoot);
+            try {
+                const source = path.join(queue.tempPath, 'retry.eml');
+                fs.writeFileSync(source, 'message');
+                await queue.add(source, 'retry-correlation');
+                await waitFor(()=>attempts === 1 && !!retry);
+                retry!();
+                await waitFor(()=>attempts === 2);
+                expect(correlations?.has('retry.eml')).to.equal(moveFails);
+                expect(fs.existsSync(path.join(queueRoot, moveFails ? 'queue' : 'failed', 'retry.eml'))).to.equal(true);
+            } finally {
+                Map.prototype.set = originalSet;
+                global.setInterval = originalInterval;
+                Mailer.sendEml = originalSend;
+                fs.renameSync = originalRename;
+                Object.defineProperty(Config, 'sendRetryLimit', limit);
+                Object.defineProperty(Config, 'sendRetryInterval', interval);
+                await queue.close();
+            }
+        });
+    }
 
     it('moves an unrecoverable delivery error from queue to failed', async ()=>{
         const queueRoot = path.join(root, 'permanent');

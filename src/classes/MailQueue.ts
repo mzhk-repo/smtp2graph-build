@@ -77,6 +77,7 @@ export class MailQueue
             this.#retryQueueInterval = undefined;
         }
         await this.#watcher?.close();
+        this.#correlationIdByFilename.clear();
     }
 
     #startWatcher()
@@ -88,18 +89,20 @@ export class MailQueue
             log('error', 'queue_watcher_error', {error});
         });
         this.#watcher.on('add', this.#onFileAdded.bind(this));
+        this.#watcher.on('unlink', filePath=>this.#correlationIdByFilename.delete(path.basename(filePath)));
     }
 
     async #onFileAdded(filePath: string)
     {
         const filename = path.basename(filePath);
         const correlationId = this.#correlationIdByFilename.get(filename) ?? randomUUID();
+        this.#correlationIdByFilename.set(filename, correlationId);
         log('verbose', 'queue_delivery_started', {correlationId});
         
         try {
             const startedAt = Date.now();
             await Mailer.sendEml(filePath);
-            this.remove(filePath);
+            if(this.remove(filePath)) this.#correlationIdByFilename.delete(filename);
             this.#removeFromRetryQueue(filename);
             Metrics.deliverySucceeded((Date.now()-startedAt)/1000);
         } catch(error) {
@@ -138,8 +141,8 @@ export class MailQueue
                 try {
                     this.#retryQueue.delete(filename); // Remove from queue
                     fs.renameSync(path.join(this.#queuePath, filename), path.join(this.#failedPath, filename)); // Move to failed dir
-                } catch(error) {
                     this.#correlationIdByFilename.delete(filename);
+                } catch(error) {
                     log('error', 'queue_retry_exhausted_move_failed', {error, correlationId});
                 }
             }
@@ -203,7 +206,7 @@ export class MailQueue
             const attempt = (tries = 0) => {
                 try {
                     fs.renameSync(filePath, dest);
-                    this.#correlationIdByFilename.set(filename, correlationId);
+                    if(!this.#paused) this.#correlationIdByFilename.set(filename, correlationId);
 
                     const fileDescriptor = fs.openSync(dest, 'r');
                     try {
@@ -243,8 +246,10 @@ export class MailQueue
     {
         try {
             fs.unlinkSync(filePath);
+            return true;
         } catch(error) {
             log('error', 'queue_delete_error', {error});
+            return false;
         }
     }
 
